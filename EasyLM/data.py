@@ -212,6 +212,7 @@ class JsonDataset(object):
         config.index_at_start = 0
         config.tokenizer_processes = 1
         config.tokenizer_parallel_chunk_size = 128
+        config.concatenate_inputs = True
 
         if updates is not None:
             config.update(ConfigDict(updates).copy_and_resolve_references())
@@ -224,6 +225,8 @@ class JsonDataset(object):
         self._text_processor = text_processor
         self._index = self.config.index_at_start
         self._file_loc = self.config.start_seek_loc
+        if self.config.concatenate_inputs:
+            self._text_processor.add_eos_token = False
 
     def parse_json(self, line):
         if not line or line == '\n':
@@ -265,6 +268,9 @@ class JsonDataset(object):
                 )
                 for batch in iterator:
                     yield batch
+    
+    def _compute_pad_length(self, l:int):
+        return min(((l - 1) // 128 + 1) * 128, self.config.seq_length)
 
     def __iter__(self):
         chunk_size = self.config.batch_size * self.config.seq_length
@@ -273,27 +279,52 @@ class JsonDataset(object):
         total_tokens = 0
         last_time = 0.0
         for tokens, loss_masks, loc, index in self.parallel_example_iterator():
-            token_buffer.extend(tokens)
-            loss_mask_buffer.extend(loss_masks)
-            while len(token_buffer) > chunk_size:
-                total_tokens += chunk_size
-                metrics = {
-                    'dataset_file_loc': loc,
-                    'dataset_example_index': index,
-                    'dataset_total_tokens': total_tokens,
-                    'dataset_throughput_tps': chunk_size / (time.time() - last_time),
-                }
-                last_time = time.time()
-                yield {
-                    'tokens': np.array(token_buffer[:chunk_size], dtype=np.int32).reshape(
-                        self.config.batch_size, -1
-                    ),
-                    'loss_masks': np.array(loss_mask_buffer[:chunk_size], dtype=np.float32).reshape(
-                        self.config.batch_size, -1
-                    ),
-                }, metrics
-                token_buffer = token_buffer[chunk_size:]
-                loss_mask_buffer = loss_mask_buffer[chunk_size:]
+            if self.config.concatenate_inputs:
+                token_buffer.extend(tokens)
+                loss_mask_buffer.extend(loss_masks)
+                while len(token_buffer) > chunk_size:
+                    total_tokens += chunk_size
+                    metrics = {
+                        'dataset_file_loc': loc,
+                        'dataset_example_index': index,
+                        'dataset_total_tokens': total_tokens,
+                        'dataset_throughput_tps': chunk_size / (time.time() - last_time),
+                    }
+                    last_time = time.time()
+                    yield {
+                        'tokens': np.array(token_buffer[:chunk_size], dtype=np.int32).reshape(
+                            self.config.batch_size, -1
+                        ),
+                        'loss_masks': np.array(loss_mask_buffer[:chunk_size], dtype=np.float32).reshape(
+                            self.config.batch_size, -1
+                        ),
+                    }, metrics
+                    token_buffer = token_buffer[chunk_size:]
+                    loss_mask_buffer = loss_mask_buffer[chunk_size:]
+            else:
+                if len(tokens) > self.config.seq_length:
+                    tokens = tokens[:self.config.seq_length]
+                    loss_masks = tokens[:self.config.seq_length]
+                token_buffer.append(tokens)
+                loss_mask_buffer.append(loss_masks)
+                if len(token_buffer) >= self.config.batch_size:
+                    max_length = self._compute_pad_length(max(len(t) for t in token_buffer[:self.config.batch_size]))
+                    total_tokens += max_length * self.config.batch_size
+                    metrics = {
+                        'dataset_file_loc': loc,
+                        'dataset_example_index': index,
+                        'dataset_total_tokens': total_tokens,
+                        'dataset_throughput_tps': chunk_size / (time.time() - last_time),
+                    }
+                    last_time = time.time()
+                    batch_padded_tokens = [t + [self._tokenizer.pad_token_id] * (max_length - len(t)) for t in token_buffer]
+                    batch_padded_loss_mask = [t + [0.] * (max_length - len(t)) for t in loss_mask_buffer[:self.config.batch_size]]
+                    yield {
+                        'tokens': np.array(batch_padded_tokens, dtype=np.int32),
+                        'loss_masks': np.array(batch_padded_loss_mask, dtype=np.float32),
+                    }, metrics
+                    token_buffer = token_buffer[self.config.batch_size:]
+                    loss_mask_buffer = loss_mask_buffer[self.config.batch_size:]
 
     def get_state_dict(self):
         return dict(
