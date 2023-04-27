@@ -80,12 +80,21 @@ class TextProcessor(object):
             fields = example[self.config.fields_from_example].split(',')
         else:
             fields = self.config.fields.split(',')
+        
+        additional_array_fields = {}
+        additional_nonarry_fields = {}
 
         for i, field in enumerate(fields):
             if field.startswith('[') and field.endswith(']'):
                 # No loss for this field.
                 field = field[1:-1]
                 mask = 0.0
+            elif field.startswith('{') and field.endswith('}'):
+                additional_array_fields[field[1:-1]] = example[field[1:-1]]
+                continue
+            elif field.startswith('<') and field.endswith('>'):
+                additional_nonarry_fields[field[1:-1]] = example[field[1:-1]]
+                continue
             else:
                 mask = 1.0
 
@@ -110,8 +119,11 @@ class TextProcessor(object):
             token_buffer.append(self.tokenizer.eos_token_id)
             loss_mask_buffer.append(1.0)
 
-        return token_buffer, loss_mask_buffer, *aux
+        return token_buffer, loss_mask_buffer, additional_array_fields, additional_nonarry_fields, *aux
 
+
+def _compute_pad_length(self, l:int, multiple_of:int=128):
+    return min(((l - 1) // multiple_of + 1) * multiple_of, self.config.seq_length)
 
 class HuggingfaceDataset(object):
     """ Huggingface dataset, where the dataset is loaded using the huggingface
@@ -149,7 +161,7 @@ class HuggingfaceDataset(object):
             token_buffer = []
             loss_mask_buffer = []
             for index, example in enumerate(self._dataset):
-                tokens, loss_masks = self.text_processor(example)
+                tokens, loss_masks, _, _ = self.text_processor(example)
                 token_buffer.extend(tokens)
                 loss_mask_buffer.extend(loss_masks)
                 while len(token_buffer) > chunk_size:
@@ -225,8 +237,8 @@ class JsonDataset(object):
         self._text_processor = text_processor
         self._index = self.config.index_at_start
         self._file_loc = self.config.start_seek_loc
-        if self.config.concatenate_inputs:
-            self._text_processor.add_eos_token = False
+        # if self.config.concatenate_inputs:
+            # self._text_processor.add_eos_token = False
 
     def parse_json(self, line):
         if not line or line == '\n':
@@ -269,19 +281,25 @@ class JsonDataset(object):
                 for batch in iterator:
                     yield batch
     
-    def _compute_pad_length(self, l:int):
-        return min(((l - 1) // 128 + 1) * 128, self.config.seq_length)
+
 
     def __iter__(self):
         chunk_size = self.config.batch_size * self.config.seq_length
         token_buffer = []
         loss_mask_buffer = []
+        additional_arrays = {}
         total_tokens = 0
         last_time = 0.0
-        for tokens, loss_masks, loc, index in self.parallel_example_iterator():
+        for tokens, loss_masks, additional_array_fields, additional_non_array_fields, loc, index in self.parallel_example_iterator():
             if self.config.concatenate_inputs:
                 token_buffer.extend(tokens)
                 loss_mask_buffer.extend(loss_masks)
+                if len(additional_arrays) == 0 and len(additional_array_fields) != 0:
+                    for k, v in additional_array_fields.items():
+                        additional_arrays[k] = []
+                for k, v in additional_array_fields.items():
+                    assert len(v) == len(tokens)
+                    additional_arrays[k].extend(v)
                 while len(token_buffer) > chunk_size:
                     total_tokens += chunk_size
                     metrics = {
@@ -291,24 +309,40 @@ class JsonDataset(object):
                         'dataset_throughput_tps': chunk_size / (time.time() - last_time),
                     }
                     last_time = time.time()
-                    yield {
+                    yield_dict = {
                         'tokens': np.array(token_buffer[:chunk_size], dtype=np.int32).reshape(
                             self.config.batch_size, -1
                         ),
                         'loss_masks': np.array(loss_mask_buffer[:chunk_size], dtype=np.float32).reshape(
                             self.config.batch_size, -1
                         ),
-                    }, metrics
+                    }
+                    for k, v in additional_arrays.items():
+                        yield_dict[k] = np.array(v[:chunk_size], dtype=np.float32).reshape(
+                            self.config.batch_size, -1
+                        )
+                    yield yield_dict, metrics
                     token_buffer = token_buffer[chunk_size:]
                     loss_mask_buffer = loss_mask_buffer[chunk_size:]
+                    for k, v in additional_arrays.items():
+                        additional_arrays[k] = v[chunk_size:]
             else:
+                if len(additional_arrays) == 0 and len(additional_array_fields) != 0:
+                    for k, v in additional_array_fields.items():
+                        additional_arrays[k] = []
+                for k, v in additional_array_fields.items():
+                    assert len(v) == len(tokens)
                 if len(tokens) > self.config.seq_length:
                     tokens = tokens[:self.config.seq_length]
                     loss_masks = tokens[:self.config.seq_length]
+                    for k, v in additional_array_fields.items():
+                        additional_array_fields[k] = v[:self.config.seq_length]
                 token_buffer.append(tokens)
                 loss_mask_buffer.append(loss_masks)
+                for k, v in additional_array_fields.items():
+                    additional_arrays[k].append(v)
                 if len(token_buffer) >= self.config.batch_size:
-                    max_length = self._compute_pad_length(max(len(t) for t in token_buffer[:self.config.batch_size]))
+                    max_length = _compute_pad_length(max(len(t) for t in token_buffer[:self.config.batch_size]))
                     total_tokens += max_length * self.config.batch_size
                     metrics = {
                         'dataset_file_loc': loc,
@@ -319,12 +353,20 @@ class JsonDataset(object):
                     last_time = time.time()
                     batch_padded_tokens = [t + [self._tokenizer.pad_token_id] * (max_length - len(t)) for t in token_buffer]
                     batch_padded_loss_mask = [t + [0.] * (max_length - len(t)) for t in loss_mask_buffer[:self.config.batch_size]]
-                    yield {
+                    batch_padded_additional_arrays = {}
+                    for k, v in additional_arrays.items():
+                        batch_padded_additional_arrays[k] = [t + [0.] * (max_length - len(t)) for t in v[:self.config.batch_size]]
+                    yield_dict = {
                         'tokens': np.array(batch_padded_tokens, dtype=np.int32),
                         'loss_masks': np.array(batch_padded_loss_mask, dtype=np.float32),
-                    }, metrics
+                    }
+                    for k, v in batch_padded_additional_arrays.items():
+                        yield_dict[k] = np.array(v, dtype=np.float32)
+                    yield yield_dict, metrics
                     token_buffer = token_buffer[self.config.batch_size:]
                     loss_mask_buffer = loss_mask_buffer[self.config.batch_size:]
+                    for k, v in additional_arrays.items():
+                        additional_arrays[k] = v[self.config.batch_size:]
 
     def get_state_dict(self):
         return dict(
