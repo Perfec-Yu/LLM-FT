@@ -172,6 +172,7 @@ def main(argv):
             **{k: ' '.join([line[vv] for vv in v if line[vv] is not None]) for k, v in field_mappings.items()}
         ) for line in input_lines
     ]
+    print(f"An example input: {input_text[0]}")
     prefix_tokenizer = None
     if not FLAGS.output_loglikelihood:
         prefix_tokenizer = LLaMAConfig.get_tokenizer(
@@ -204,8 +205,7 @@ def main(argv):
                 input_lengths.append(line_length)
     else:
         input_chunks = [input_text[i:i + FLAGS.prediction_batch_size] for i in range(0, len(input_text), FLAGS.prediction_batch_size)]
-        print(f"An example input: {input_text[0]}")
-    
+
     print("loading model")
     with jax.default_device(jax.devices("cpu")[0]):
         llama_config = LLaMAConfig.load_config(FLAGS.load_llama_config)
@@ -230,26 +230,23 @@ def main(argv):
     @partial(
         pjit,
         in_shardings=(model_ps, PS(), PS()),
-        out_shardings=(PS(), PS(), PS())
+        out_shardings=(PS(), PS())
     )
     def forward_loglikelihood(params, rng, batch):
         batch = with_sharding_constraint(batch, PS(('dp', 'fsdp')))
         rng_generator = JaxRNG(rng)
         input_tokens = batch['input_tokens']
-        bos_tokens = jnp.full(
-                (input_tokens.shape[0], 1), llama_config.bos_token_id, dtype=jnp.int32
-            )
-        input_tokens = jnp.concatenate([bos_tokens, input_tokens[:, :-1]], axis=1)
-        attention_mask = batch['attention_mask'] if 'attention_mask' in batch else None
+        output_tokens = batch["output_tokens"]
+        attention_mask = batch["attention_mask"]
 
         logits = hf_model.module.apply(
-            params, input_tokens, attention_mask=attention_mask,
+            params, input_tokens, attention_mask,
             deterministic=True, rngs=rng_generator(llama_config.rng_keys()),
         ).logits
         loglikelihood = - optax.softmax_cross_entropy_with_integer_labels(
-            logits, input_tokens
+            logits, output_tokens
         )
-        return loglikelihood.tolist()
+        return loglikelihood, rng_generator()
 
     @partial(
         pjit,
@@ -312,14 +309,32 @@ def main(argv):
             output_text.append(text)
         return output_text
 
+    def compute_loglikelihood(input_tokens, attention_mask=None):
+        nonlocal sharded_rng
+        if attention_mask is None:
+            attention_mask = np.ones_like(input_tokens)
+        bos_tokens = np.full(
+            (input_tokens.shape[0], 1), llama_config.bos_token_id, dtype=np.int32
+        )
+        bos_mask = np.ones_like(bos_tokens)
+        batch = {}
+        batch['input_tokens'] = np.concatenate([bos_tokens, input_tokens[:, :-1]], axis=1)
+        batch['output_tokens'] = input_tokens
+        batch['attention_mask'] = np.concatenate([bos_mask, attention_mask[:, :-1]], axis=1)
+        with mesh:
+            loglikelihood, sharded_rng = forward_loglikelihood(params, sharded_rng, batch)
+            loglikelihood = jax.device_get(loglikelihood)
+        return loglikelihood.tolist()
+        
+
     def compose_pieces(pieces, overlap, keep_first=False):
         if overlap == 0:
             return [tt for t in pieces for tt in t]
         else:
             if keep_first:
-                return pieces[0] + [tt[overlap:] for t in pieces[1:] for tt in t]
+                return pieces[0] + [tt for t in pieces[1:] for tt in t[overlap:]]
             else:
-                return [tt[overlap:] for t in pieces[1:] for tt in t]
+                return [tt for t in pieces[1:] for tt in t[overlap:]]
     
     if FLAGS.output_loglikelihood:
         if FLAGS.concatenate_inputs:
@@ -333,17 +348,19 @@ def main(argv):
                         input_tokens[j: j+FLAGS.input_length] 
                         for j in range(batch_start_idx, batch_start_idx + chunk_size, delta_length)
                     ]
-                    with mesh:
-                        loglikelihoods = forward_loglikelihood(
-                            params, sharded_rng, dict(
-                                input_tokens=np.array(batch_input_tokens, dtype=np.int32).reshape(-1, FLAGS.input_length)
-                            )
-                        )
+                    if len(batch_input_tokens[-1]) < FLAGS.input_length:
+                        batch_input_tokens = [t + [tokenizer.pad_token_id] * (FLAGS.input_length - len(t)) for t in batch_input_tokens]
+                    if len(batch_input_tokens) < FLAGS.prediction_batch_size:
+                        batch_input_tokens += [
+                            [tokenizer.pad_token_id] * FLAGS.input_length
+                            for _ in range(FLAGS.prediction_batch_size - len(batch_input_tokens))
+                        ]
+                    loglikelihoods = compute_loglikelihood(np.array(batch_input_tokens, dtype=np.int32))
                     if batch_start_idx == 0:
                         log_likelihoods.extend(compose_pieces(loglikelihoods, FLAGS.input_overlap, keep_first=True))
                     else:
                         log_likelihoods.extend(compose_pieces(loglikelihoods, FLAGS.input_overlap, keep_first=False))
-                    while len(log_likelihoods) > input_lengths[idx]:
+                    while idx < len(input_lengths) and len(log_likelihoods) > input_lengths[idx]:
                         input_lines[idx][FLAGS.prediction_output_field] = log_likelihoods[:input_lengths[idx]]
                         f.write(json.dumps(input_lines[idx]) + '\n')
                         log_likelihoods = log_likelihoods[input_lengths[idx]:]
@@ -355,22 +372,31 @@ def main(argv):
                 for i in tqdm(range(0, len(input_tokens), FLAGS.prediction_batch_size)):
                     batch_input_tokens = input_tokens[i:i+FLAGS.prediction_batch_size]
                     batch_lengths = [len(it) for it in batch_input_tokens]
-                    max_len = _compute_pad_length(max(batch_lengths))
+                    max_len = _compute_pad_length(max(batch_lengths), 128, FLAGS.input_length)
                     batch_padded_input_tokens = [
                         it + [tokenizer.pad_token_id] * (max_len - len(it)) for it in batch_input_tokens
                     ]
                     batch_attention_mask = [
                         [1] * len(it) + [0] * (max_len - len(it)) for it in batch_input_tokens
                     ]
-                    loglikelihoods = forward_loglikelihood(
-                        params, sharded_rng, dict(
-                            input_tokens=np.array(batch_padded_input_tokens, dtype=np.int32),
-                            attention_mask=np.array(batch_attention_mask, dtype=np.int32),
-                        )
+                    if len(batch_padded_input_tokens) < FLAGS.prediction_batch_size:
+                        batch_padded_input_tokens += [
+                            [tokenizer.pad_token_id] * max_len
+                            for _ in range(FLAGS.prediction_batch_size - len(batch_padded_input_tokens))
+                        ]
+                        batch_attention_mask += [
+                            [0] * max_len
+                            for _ in range(FLAGS.prediction_batch_size - len(batch_attention_mask))
+                        ]
+                    loglikelihoods = compute_loglikelihood(
+                        np.array(batch_padded_input_tokens, dtype=np.int32),
+                        np.array(batch_attention_mask, dtype=np.int32),
                     )
+                    if len(batch_lengths) < FLAGS.prediction_batch_size:
+                        loglikelihoods = loglikelihoods[:len(batch_lengths)]
                     for l, ll in zip(batch_lengths, loglikelihoods):
                         log_likelihoods.append(ll[:l])
-                    while len(log_likelihoods) >= input_lengths[idx]:
+                    while idx < len(input_lengths) and len(log_likelihoods) >= input_lengths[idx]:
                         current_log_likelihoods = log_likelihoods[:input_lengths[idx]]
                         current_log_likelihoods = compose_pieces(current_log_likelihoods, FLAGS.input_overlap, keep_first=True)
                         input_lines[idx][FLAGS.prediction_output_field] = current_log_likelihoods

@@ -132,3 +132,4 @@ launcher/
 
 train.sh
 predict.sh
+data/

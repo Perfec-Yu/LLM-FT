@@ -122,8 +122,8 @@ class TextProcessor(object):
         return token_buffer, loss_mask_buffer, additional_array_fields, additional_nonarry_fields, *aux
 
 
-def _compute_pad_length(self, l:int, multiple_of:int=128):
-    return min(((l - 1) // multiple_of + 1) * multiple_of, self.config.seq_length)
+def _compute_pad_length(l:int, multiple_of:int=128, max_length:int=1024):
+    return min(((l - 1) // multiple_of + 1) * multiple_of, max_length)
 
 class HuggingfaceDataset(object):
     """ Huggingface dataset, where the dataset is loaded using the huggingface
