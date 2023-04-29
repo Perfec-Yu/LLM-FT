@@ -66,8 +66,12 @@ class StreamingCheckpointer(object):
             path = '/dev/null'
         mlxu.save_pickle(obj, path)
 
-    def save_all(self, train_state, gather_fns, metadata=None, dataset=None, milestone=False):
+    def save_all(self, train_state, gather_fns, metadata=None, dataset=None, milestone=False, epoch_suffix=False, epoch_steps:int=1):
         step = int(jax.device_get(train_state.step))
+        if epoch_suffix:
+            suffix = f'_epoch{step // epoch_steps}'
+        else:
+            suffix = f'_step{step}'
         if self.config.save_optimizer_state:
             checkpoint_state = train_state
             checkpoint_name = 'streaming_train_state'
@@ -79,10 +83,10 @@ class StreamingCheckpointer(object):
 
         if milestone:
             # Save a milestone checkpoint that will not be overwritten
-            self.save_pickle(metadata, f'metadata_{step}.pkl')
-            self.save_pickle(dataset, f'dataset_{step}.pkl')
+            self.save_pickle(metadata, f'metadata_{suffix}.pkl')
+            self.save_pickle(dataset, f'dataset_{suffix}.pkl')
             self.save_checkpoint(
-                checkpoint_state, f'{checkpoint_name}_{step}', checkpoint_gather_fns
+                checkpoint_state, f'{checkpoint_name}_{suffix}', checkpoint_gather_fns
             )
         else:
             # Save a normal checkpoint that can be overwritten

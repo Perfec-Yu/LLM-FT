@@ -125,6 +125,12 @@ class TextProcessor(object):
 def _compute_pad_length(l:int, multiple_of:int=128, max_length:int=1024):
     return min(((l - 1) // multiple_of + 1) * multiple_of, max_length)
 
+
+def _epoch_to_steps(epoch, batch_size, n_instances):
+    epoch_steps = round(n_instances / batch_size)
+    return epoch * epoch_steps, epoch_steps
+
+
 class HuggingfaceDataset(object):
     """ Huggingface dataset, where the dataset is loaded using the huggingface
         datasets.load_dataset() function.
@@ -153,6 +159,7 @@ class HuggingfaceDataset(object):
         self._dataset = load_dataset(
             self.config.path, name, split=split, streaming=self.config.streaming
         )
+        self._n_instances = sum(1 for _ in self._dataset)
 
     def __iter__(self):
         chunk_size = self.config.batch_size * self.config.seq_length
@@ -237,8 +244,8 @@ class JsonDataset(object):
         self._text_processor = text_processor
         self._index = self.config.index_at_start
         self._file_loc = self.config.start_seek_loc
-        # if self.config.concatenate_inputs:
-            # self._text_processor.add_eos_token = False
+        with mlxu.open_file(self.config.path, 'r') as fin:
+            self._n_instances = sum(1 for _ in fin)
 
     def parse_json(self, line):
         if not line or line == '\n':
@@ -341,7 +348,7 @@ class JsonDataset(object):
                 loss_mask_buffer.append(loss_masks)
                 for k, v in additional_array_fields.items():
                     additional_arrays[k].append(v)
-                if len(token_buffer) >= self.config.batch_size:
+                while len(token_buffer) >= self.config.batch_size:
                     max_length = _compute_pad_length(max(len(t) for t in token_buffer[:self.config.batch_size]))
                     total_tokens += max_length * self.config.batch_size
                     metrics = {

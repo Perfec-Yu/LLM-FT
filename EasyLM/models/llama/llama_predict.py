@@ -16,6 +16,9 @@ from EasyLM.jax_utils import (
     with_sharding_constraint, FlaxTemperatureLogitsWarper
 )
 from EasyLM.models.llama.llama_model import LLaMAConfig, FlaxLLaMAForCausalLM
+from EasyLM.template import (
+    AlpacaTemplate, AlpacaQuestionGenerationTemplate, AlpacaAnswerGenerationTemplate, AlpacaAnswerExtractionTemplate, AlpacaAnswerTemplate, KoalaTemplate, KoalaQuestionGenerationTemplate, KoalaAnswerGenerationTemplate, KoalaAnswerExtractionTemplate, KoalaAnswerTemplate
+)
 import json
 from typing import List
 import optax
@@ -29,6 +32,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     dtype='bf16',
     output_loglikelihood=False,
     concatenate_inputs=False,
+    truncate_inputs=False,
     input_length=512,
     input_overlap=8,
     seq_length=1024,
@@ -41,6 +45,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     load_llama_config='',
     load_checkpoint='',
     prediction_input_files='',
+    prediction_input_joining_string=' ',
     prediction_input_field_mappings='',
     prediction_output_file='',
     prediction_output_field='',
@@ -48,55 +53,6 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     template_index='Alpaca',
     tokenizer=LLaMAConfig.get_tokenizer_config()
 )
-
-
-class AutoSwitchTemplate(object):
-    templates: List[str] = []
-    keywords: List[str] = []
-    def __init__(self,) -> None:
-        pass
-    
-    def choose_template(self, **kwargs) -> str:
-        idx = None
-        for i, (k, t) in enumerate(zip(self.keywords, self.templates)):
-            if k not in kwargs or kwargs[k] is None or len(kwargs[k].strip()) == 0:
-                idx = i - 1
-                break
-        if idx is None:
-            idx = len(self.keywords) - 1
-        if idx == -1 or self.templates[idx] is None:
-            raise ValueError("No template is available for the given input.")
-        return idx
-    
-    def format(self, **kwargs):
-        idx = self.choose_template(**kwargs)
-        format_kwargs = {k: kwargs.get(k, None) for k in self.keywords[:idx+1]}
-        return self.templates[idx].format(**format_kwargs)
-
-
-class AlpacaTemplate(AutoSwitchTemplate):
-    templates = [
-        "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Response:\n",
-        "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Input:\n{context}\n\n### Response:\n",
-        "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Input:\nDate: {date}. {context}\n\n### Response:\n"
-    ]
-    keywords = ['instruction', 'context', 'date']
-
-
-class QuestionGenerationTemplate(AutoSwitchTemplate):
-    templates = [
-        AlpacaTemplate.templates[1].format(instruction="Generate some questions that can be answered with the following information.", context="{context}"),
-        AlpacaTemplate.templates[2].format(instruction="Generate some questions that can be answered with the following information. The questions can relate to either the date or the facts.", date="{date}", context="{context}"),
-    ]
-    keywords = ['context', 'date']
-
-
-class AnswerTemplate(AutoSwitchTemplate):
-    templates = [None] * 3 + [
-        AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
-        AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
-    ]
-    keywords = ['title', 'question', 'answer', 'fact', 'date']
 
 
 class MidTruncationTokenizerWrapper(object):
@@ -132,9 +88,16 @@ class MidTruncationTokenizerWrapper(object):
 
 
 TEMPLATES = {
-    "QuestionGeneration": QuestionGenerationTemplate(),
+    "AlpacaQuestionGeneration": AlpacaQuestionGenerationTemplate(),
+    "AlpacaAnswerGeneration": AlpacaAnswerGenerationTemplate(),
+    "AlpacaAnswerExtraction": AlpacaAnswerExtractionTemplate(),
+    "AlpacaLogits": AlpacaAnswerTemplate(),
     "Alpaca": AlpacaTemplate(),
-    "Logits": AnswerTemplate(),
+    "KoalaQuestionGeneration": KoalaQuestionGenerationTemplate(),
+    "KoalaAnswerGeneration": KoalaAnswerGenerationTemplate(),
+    "KoalaAnswerExtraction": KoalaAnswerExtractionTemplate(),
+    "KoalaLogits": KoalaAnswerTemplate(),
+    "Koala": KoalaTemplate(),
     "Preprocessed": "{input}"
 }
 
@@ -169,7 +132,7 @@ def main(argv):
     field_mappings = parse_field_mappings(FLAGS.prediction_input_field_mappings)
     input_text = [
         TEMPLATES[FLAGS.template_index].format(
-            **{k: ' '.join([line[vv] for vv in v if line[vv] is not None]) for k, v in field_mappings.items()}
+            **{k: FLAGS.prediction_input_joining_string.join([line[vv] for vv in v if line[vv] is not None]) for k, v in field_mappings.items()}
         ) for line in input_lines
     ]
     print(f"An example input: {input_text[0]}")
@@ -179,10 +142,18 @@ def main(argv):
             FLAGS.tokenizer, truncation_side='right', padding_side='left'
         )
         # make sure special tokens are not truncated
-        prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length)
+        if FLAGS.truncate_inputs:
+            if FLAGS.template_index.startswith("Alpaca"):
+                prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length, truncation_end_string='### Response:\n')
+            elif FLAGS.template_index.startswith("Koala"):
+                prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length, truncation_end_string='GPT:')
     tokenizer = LLaMAConfig.get_tokenizer(
         FLAGS.tokenizer, truncation_side='right', padding_side='right'
     )
+    L = max(len(tokenizer.encode(line)) for line in input_text)
+    print("maximal input length:", L)
+    if not FLAGS.truncate_inputs and L > FLAGS.input_length:
+        raise ValueError(f"Input length {FLAGS.input_length} is too short for input of length {L}")
     input_tokens = input_lengths = input_chunks = None
     if FLAGS.output_loglikelihood:
         input_tokens = []

@@ -17,7 +17,7 @@ from flax.jax_utils import prefetch_to_device
 from flax.training.train_state import TrainState
 import optax
 
-from EasyLM.data import DatasetFactory
+from EasyLM.data import DatasetFactory, _epoch_to_steps
 from EasyLM.checkpoint import StreamingCheckpointer
 from EasyLM.optimizers import OptimizerFactory
 from EasyLM.jax_utils import (
@@ -38,7 +38,8 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
     initialize_jax_distributed=False,
     mesh_dim='1,-1,1',
-    total_steps=10000,
+    total_steps=0,
+    total_epochs=-1,
     load_llama_config='',
     update_llama_config='',
     load_checkpoint='',
@@ -46,6 +47,8 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     log_freq=50,
     save_model_freq=0,
     save_milestone_freq=0,
+    save_epoch_freq=0,
+    save_epoch_milestone_freq=0,
     eval_steps=0,
     tokenizer=LLaMAConfig.get_tokenizer_config(),
     train_dataset=DatasetFactory.get_default_config(),
@@ -73,6 +76,23 @@ def main(argv):
 
     tokenizer = LLaMAConfig.get_tokenizer(FLAGS.tokenizer)
     dataset = DatasetFactory.load_dataset(FLAGS.train_dataset, tokenizer)
+
+    epoch_steps = -1
+    if FLAGS.total_epochs > 0:
+        assert FLAGS.total_steps <= 0, ("Specifying both total_steps and total_epochs...")
+        FLAGS.total_steps, epoch_steps = _epoch_to_steps(
+            FLAGS.total_epochs, dataset.config.batch_size, dataset._n_instances
+        )
+        print(f"Total steps: {FLAGS.total_steps}")
+        if FLAGS.save_epoch_freq > 0:
+            assert FLAGS.save_freq <= 0, ("Specifying both save_freq and save_epoch_feq...")
+            FLAGS.save_freq = epoch_steps * FLAGS.save_epoch_freq
+            print(f"Save freq: {FLAGS.save_freq}")
+        if FLAGS.save_epoch_milestone_freq > 0:
+            assert FLAGS.save_milestone_freq <= 0, ("Specifying both save_milestone_freq and save_epoch_milestone_freq...")
+            FLAGS.save_milestone_freq = epoch_steps * FLAGS.save_epoch_milestone_freq
+            print(f"Save milestone freq: {FLAGS.save_milestone_freq}")
+
     if FLAGS.load_dataset_state != '':
         dataset.load_state_dict(mlxu.load_pickle(FLAGS.load_dataset_state))
 
@@ -217,6 +237,8 @@ def main(argv):
             metadata=metadata,
             dataset=dataset.get_state_dict(),
             milestone=milestone,
+            epoch_suffix=FLAGS.save_epoch_freq > 0 or FLAGS.save_epoch_milestone_freq > 0,
+            epoch_steps=epoch_steps
         )
 
     mesh = LLaMAConfig.get_jax_mesh(FLAGS.mesh_dim)
