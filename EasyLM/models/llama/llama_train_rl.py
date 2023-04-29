@@ -61,10 +61,15 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     llama=LLaMAConfig.get_default_config(),
     logger=mlxu.WandBLogger.get_default_config(),
     log_all_worker=False,
+    monitor_with_smi=False
 )
 
 
 def main(argv):
+    if FLAGS.monitor_with_smi:
+        from jax_smi import initialise_tracking
+        initialise_tracking()
+
     if FLAGS.initialize_jax_distributed:
         jax.distributed.initialize()
 
