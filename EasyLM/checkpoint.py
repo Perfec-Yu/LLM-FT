@@ -69,9 +69,9 @@ class StreamingCheckpointer(object):
     def save_all(self, train_state, gather_fns, metadata=None, dataset=None, milestone=False, epoch_suffix=False, epoch_steps:int=1):
         step = int(jax.device_get(train_state.step))
         if epoch_suffix:
-            suffix = f'_epoch{step // epoch_steps}'
+            suffix = f'epoch_{step // epoch_steps}'
         else:
-            suffix = f'_step{step}'
+            suffix = f'step_{step}'
         if self.config.save_optimizer_state:
             checkpoint_state = train_state
             checkpoint_name = 'streaming_train_state'

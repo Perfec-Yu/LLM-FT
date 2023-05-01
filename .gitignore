@@ -134,3 +134,5 @@ train.sh
 predict.sh
 data/
 preprocess/
+outputs/
+outputs_on_title_and_question/

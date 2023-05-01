@@ -80,13 +80,14 @@ class AlpacaQAGenerationTemplate(AutoSwitchTemplate):
 
 
 class AlpacaAnswerTemplate(AutoSwitchTemplate):
-    templates = [None] + [
+    templates = [
+        AlpacaTemplate.templates[0].format(instruction="{question}"),
         AlpacaTemplate.templates[0].format(instruction="{title}. {question}"),
         AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+" {answer}",
         AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
         AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
     ]
-    keywords = ['title', 'question', 'answer', 'fact', 'date']
+    keywords = ['question', 'title', 'answer', 'fact', 'date']
 
 
 class AlpacaAnswerGenerationTemplate(AutoSwitchTemplate):
@@ -139,13 +140,14 @@ class KoalaQAGenerationTemplate(AutoSwitchTemplate):
 
 
 class KoalaAnswerTemplate(AutoSwitchTemplate):
-    templates = [None] + [
+    templates = [
+        KoalaTemplate.templates[0].format(instruction="{question}"),
         KoalaTemplate.templates[0].format(instruction="{title}. {question}"),
         KoalaTemplate.templates[0].format(instruction="{title}. {question}")+" {answer}",
         KoalaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
         KoalaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
     ]
-    keywords = ['title', 'question', 'answer', 'fact', 'date']
+    keywords = ['question', 'title', 'answer', 'fact', 'date']
 
 
 class KoalaAnswerGenerationTemplate(AutoSwitchTemplate):
