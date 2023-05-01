@@ -92,7 +92,7 @@ class TextProcessor(object):
             elif field.startswith('{') and field.endswith('}'):
                 additional_array_fields[field[1:-1]] = example[field[1:-1]]
                 continue
-            elif field.startswith('<') and field.endswith('>'):
+            elif field.startswith('(') and field.endswith(')'):
                 additional_nonarry_fields[field[1:-1]] = example[field[1:-1]]
                 continue
             else:
