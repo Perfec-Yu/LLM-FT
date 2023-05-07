@@ -244,8 +244,15 @@ class JsonDataset(object):
         self._text_processor = text_processor
         self._index = self.config.index_at_start
         self._file_loc = self.config.start_seek_loc
-        with mlxu.open_file(self.config.path, 'r') as fin:
-            self._n_instances = sum(1 for _ in fin)
+        if not self.config.concatenate_inputs:
+            with mlxu.open_file(self.config.path, 'r') as fin:
+                self._n_instances = sum(1 for _ in fin)
+        else:
+            with mlxu.open_file(self.config.path, 'r') as fin:
+                data = [self.parse_json(line) for line in fin]
+            data = [self.text_processor(t, has_aux=False)[0] for t in data]
+            self._n_instances = sum(len(t) for t in data) // self.config.seq_length
+            
 
     def parse_json(self, line):
         if not line or line == '\n':
@@ -349,7 +356,7 @@ class JsonDataset(object):
                 for k, v in additional_array_fields.items():
                     additional_arrays[k].append(v)
                 while len(token_buffer) >= self.config.batch_size:
-                    max_length = _compute_pad_length(max(len(t) for t in token_buffer[:self.config.batch_size]))
+                    max_length = self.config.seq_length#_compute_pad_length(max(len(t) for t in token_buffer[:self.config.batch_size]))
                     total_tokens += max_length * self.config.batch_size
                     metrics = {
                         'dataset_file_loc': loc,

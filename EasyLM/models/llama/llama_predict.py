@@ -17,7 +17,7 @@ from EasyLM.jax_utils import (
 )
 from EasyLM.models.llama.llama_model import LLaMAConfig, FlaxLLaMAForCausalLM
 from EasyLM.template import (
-    AlpacaTemplate, AlpacaQuestionGenerationTemplate, AlpacaAnswerGenerationTemplate, AlpacaAnswerExtractionTemplate, AlpacaAnswerTemplate, KoalaTemplate, KoalaQuestionGenerationTemplate, KoalaAnswerGenerationTemplate, KoalaAnswerExtractionTemplate, KoalaAnswerTemplate
+    AlpacaTemplate, AlpacaQuestionGenerationTemplate, AlpacaAnswerGenerationTemplate, AlpacaAnswerExtractionTemplate, AlpacaAnswerTemplate, AlpacaKeywordsTemplate,KoalaTemplate, KoalaQuestionGenerationTemplate, KoalaAnswerGenerationTemplate, KoalaAnswerExtractionTemplate, KoalaAnswerTemplate, MixV2AnswerTemplate, MixV2Template, MixV2QuestionGenerationTemplate, MixV2AnswerGenerationTemplate, MixV2AnswerExtractionTemplate, MixV2KeywordsTemplate
 )
 import json
 from typing import List
@@ -92,12 +92,19 @@ TEMPLATES = {
     "AlpacaAnswerGeneration": AlpacaAnswerGenerationTemplate(),
     "AlpacaAnswerExtraction": AlpacaAnswerExtractionTemplate(),
     "AlpacaLogits": AlpacaAnswerTemplate(),
+    "AlpacaKeywords": AlpacaKeywordsTemplate(),
     "Alpaca": AlpacaTemplate(),
     "KoalaQuestionGeneration": KoalaQuestionGenerationTemplate(),
     "KoalaAnswerGeneration": KoalaAnswerGenerationTemplate(),
     "KoalaAnswerExtraction": KoalaAnswerExtractionTemplate(),
     "KoalaLogits": KoalaAnswerTemplate(),
     "Koala": KoalaTemplate(),
+    "MixV2QuestionGeneration": MixV2QuestionGenerationTemplate(),
+    "MixV2AnswerGeneration": MixV2AnswerGenerationTemplate(),
+    "MixV2AnswerExtraction": MixV2AnswerExtractionTemplate(),
+    "MixV2Logits": MixV2AnswerTemplate(),
+    "MixV2Keywords": MixV2KeywordsTemplate(),
+    "MixV2": MixV2Template(),
     "Preprocessed": "{input}"
 }
 
@@ -259,7 +266,7 @@ def main(argv):
         inputs = prefix_tokenizer(
             text,
             padding='longest',
-            pad_to_multiple_of=128,
+            pad_to_multiple_of=128 if FLAGS.input_length % 128 == 0 else FLAGS.input_length,
             truncation=True,
             max_length=FLAGS.input_length,
             return_tensors='np',

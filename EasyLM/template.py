@@ -82,12 +82,11 @@ class AlpacaQAGenerationTemplate(AutoSwitchTemplate):
 class AlpacaAnswerTemplate(AutoSwitchTemplate):
     templates = [
         AlpacaTemplate.templates[0].format(instruction="{question}"),
-        AlpacaTemplate.templates[0].format(instruction="{title}. {question}"),
-        AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+" {answer}",
-        AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
-        AlpacaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
+        AlpacaTemplate.templates[0].format(instruction="{question}")+"{answer}",
+        AlpacaTemplate.templates[0].format(instruction="{question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
+        AlpacaTemplate.templates[0].format(instruction="{question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
     ]
-    keywords = ['question', 'title', 'answer', 'fact', 'date']
+    keywords = ['question', 'answer', 'fact', 'date']
 
 
 class AlpacaAnswerGenerationTemplate(AutoSwitchTemplate):
@@ -102,6 +101,13 @@ class AlpacaAnswerExtractionTemplate(AutoSwitchTemplate):
         AlpacaTemplate.templates[1].format(instruction="Extract related content from the input to answer the question. Question: {question}", context='{context}')
     ]
     keywords = ['question', 'context']
+
+
+class AlpacaKeywordsTemplate(AutoSwitchTemplate):
+    templates = [
+        AlpacaTemplate.templates[1].format(instruction="Extract keywords from the following input.", context='{context}')
+    ]
+    keywords = ['context']
 
 
 class KoalaTemplate(AutoSwitchTemplate):
@@ -142,12 +148,11 @@ class KoalaQAGenerationTemplate(AutoSwitchTemplate):
 class KoalaAnswerTemplate(AutoSwitchTemplate):
     templates = [
         KoalaTemplate.templates[0].format(instruction="{question}"),
-        KoalaTemplate.templates[0].format(instruction="{title}. {question}"),
-        KoalaTemplate.templates[0].format(instruction="{title}. {question}")+" {answer}",
-        KoalaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
-        KoalaTemplate.templates[0].format(instruction="{title}. {question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
+        KoalaTemplate.templates[0].format(instruction="{question}")+" {answer}",
+        KoalaTemplate.templates[0].format(instruction="{question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
+        KoalaTemplate.templates[0].format(instruction="{question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
     ]
-    keywords = ['question', 'title', 'answer', 'fact', 'date']
+    keywords = ['question', 'answer', 'fact', 'date']
 
 
 class KoalaAnswerGenerationTemplate(AutoSwitchTemplate):
@@ -162,3 +167,69 @@ class KoalaAnswerExtractionTemplate(AutoSwitchTemplate):
         KoalaTemplate.templates[1].format(instruction="Extract related content from the reference to answer the question. Question: {question}", context='{context}')
     ]
     keywords = ['question', 'context']
+
+
+class MixV2Template(AutoSwitchTemplate):
+    '''
+    A template for MixV2-styled instruction following.
+    '''
+    templates = [
+        "A human is talking to an ai. ###human:{instruction} ###ai: ",
+        "A human is talking to an ai. ###human:{instruction} Here are the information you can refer to: {context} ###ai: ",
+        "A human is talking to an ai. ###human:{instruction} Here are the information you can refer to: {date} {context} ###ai: "
+    ]
+    keywords = ['instruction', 'context', 'date']
+
+
+class MixV2QuestionGenerationTemplate(AutoSwitchTemplate):
+    '''
+    A template for question generation in MixV2_style.
+    '''
+    templates = [
+        MixV2Template.templates[1].format(instruction="Generate some questions related to the facts in the following information.", context="{context}"),
+        MixV2Template.templates[2].format(instruction="Generate some questions related to the facts in the following information. The questions can relate to either the date or the facts.", date="{date}", context="{context}"),
+        MixV2Template.templates[2].format(instruction="Generate some questions related to the facts in the following information. The questions can relate to either the date or the fact, but not the background.", date="{date}", context="\nBackground: {title}.\nFact: {context}"),
+    ]
+    keywords = ['context', 'date', 'title']
+
+
+class MixV2QAGenerationTemplate(AutoSwitchTemplate):
+    '''
+    A template for QA generation in MixV2_style.
+    '''
+    templates = [
+        MixV2Template.templates[1].format(instruction="Generate some questions with answers from the following information. The template is '1. # Question: ... # Answer: ...'", context="{context}"),
+        MixV2Template.templates[2].format(instruction="Generate some questions with answers from the following information. The questions can relate to either the date or the facts. The template is '1. # Question: ... # Answer: ...'", date="{date}", context="{context}")
+    ]
+    keywords = ['context', 'date']
+
+
+class MixV2AnswerTemplate(AutoSwitchTemplate):
+    templates = [
+        MixV2Template.templates[0].format(instruction="{question}"),
+        MixV2Template.templates[0].format(instruction="{question}")+"{answer}",
+        MixV2Template.templates[0].format(instruction="{question}")+"The question is related the following information:\nFact: {fact}\nBased on the information, {answer}",
+        MixV2Template.templates[0].format(instruction="{question}")+"The question is related the following information:\nData: {date}. Fact: {fact}\nBased on the information, {answer}"
+    ]
+    keywords = ['question', 'answer', 'fact', 'date']
+
+
+class MixV2AnswerGenerationTemplate(AutoSwitchTemplate):
+    templates = [None] + [
+        MixV2Template.templates[1].format(instruction="Answer the question based on the facts from the reference. Question: {question}", context='{context}')
+    ]
+    keywords = ['question', 'context']
+
+
+class MixV2AnswerExtractionTemplate(AutoSwitchTemplate):
+    templates = [None] + [
+        MixV2Template.templates[1].format(instruction="Extract related content from the reference to answer the question. Question: {question}", context='{context}')
+    ]
+    keywords = ['question', 'context']
+
+
+class MixV2KeywordsTemplate(AutoSwitchTemplate):
+    templates = [
+        MixV2Template.templates[1].format(instruction="Extract keywords from the following information.", context='{context}')
+    ]
+    keywords = ['context']
