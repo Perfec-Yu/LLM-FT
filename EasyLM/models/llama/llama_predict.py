@@ -20,7 +20,7 @@ from EasyLM.template import (
     AlpacaTemplate, AlpacaQuestionGenerationTemplate, AlpacaAnswerGenerationTemplate, AlpacaAnswerExtractionTemplate, AlpacaAnswerTemplate, AlpacaKeywordsTemplate,KoalaTemplate, KoalaQuestionGenerationTemplate, KoalaAnswerGenerationTemplate, KoalaAnswerExtractionTemplate, KoalaAnswerTemplate, MixV2AnswerTemplate, MixV2Template, MixV2QuestionGenerationTemplate, MixV2AnswerGenerationTemplate, MixV2AnswerExtractionTemplate, MixV2KeywordsTemplate
 )
 import json
-from typing import List
+from typing import Any, List
 import optax
 from EasyLM.data import _compute_pad_length
 
@@ -63,6 +63,10 @@ class MidTruncationTokenizerWrapper(object):
         self.ending_tokens = self.tokenizer.encode(self.truncation_end_string, return_tensors='np', add_special_tokens=False)
         self.ending_len = len(self.ending_tokens[0])
         self.ending_attention = np.ones_like(self.ending_tokens)
+        self.bos_token_id = self.tokenizer.bos_token_id
+        self.eos_token_id = self.tokenizer.eos_token_id
+        self.pad_token_id = self.tokenizer.pad_token_id
+
     
     def __call__(self, text: List[str], pad_to_multiple_of=-1, max_length=None, **kwargs):
         assert all(t.endswith(self.truncation_end_string) for t in text)
@@ -85,6 +89,17 @@ class MidTruncationTokenizerWrapper(object):
         encodings.input_ids = input_ids
         encodings.attention_mask = attention_mask
         return encodings
+    
+    def encode(self, text):
+        index = text.index(self.truncation_end_string)
+        text_before_truncation = text[:index]
+        ending_text = text[index:]
+        tokens = self.tokenizer.encode(text_before_truncation)[:904] + self.tokenizer.encode(ending_text)
+        return tokens
+
+    def decode(self, inputs):
+        return self.tokenizer.decode(inputs)
+
 
 
 TEMPLATES = {
@@ -144,19 +159,21 @@ def main(argv):
     ]
     print(f"An example input: {input_text[0]}")
     prefix_tokenizer = None
-    if not FLAGS.output_loglikelihood:
-        prefix_tokenizer = LLaMAConfig.get_tokenizer(
-            FLAGS.tokenizer, truncation_side='right', padding_side='left'
-        )
-        # make sure special tokens are not truncated
-        if FLAGS.truncate_inputs:
-            if FLAGS.template_index.startswith("Alpaca"):
-                prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length, truncation_end_string='### Response:\n')
-            elif FLAGS.template_index.startswith("Koala"):
-                prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length, truncation_end_string='GPT:')
-    tokenizer = LLaMAConfig.get_tokenizer(
-        FLAGS.tokenizer, truncation_side='right', padding_side='right'
+    prefix_tokenizer = LLaMAConfig.get_tokenizer(
+        FLAGS.tokenizer, truncation_side='right', padding_side='left'
     )
+    # make sure special tokens are not truncated
+    if FLAGS.truncate_inputs:
+        if FLAGS.template_index.startswith("Alpaca"):
+            prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length, truncation_end_string='### Response:\n')
+        elif FLAGS.template_index.startswith("Koala"):
+            prefix_tokenizer = MidTruncationTokenizerWrapper(prefix_tokenizer, FLAGS.input_length, truncation_end_string='GPT:')
+    if not FLAGS.output_loglikelihood:
+        tokenizer = LLaMAConfig.get_tokenizer(
+            FLAGS.tokenizer, truncation_side='right', padding_side='right'
+        )
+    else:
+        tokenizer = prefix_tokenizer
     L = max(len(tokenizer.encode(line)) for line in input_text)
     print("maximal input length:", L)
     if not FLAGS.truncate_inputs and L > FLAGS.input_length:
