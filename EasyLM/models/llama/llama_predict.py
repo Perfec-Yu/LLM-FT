@@ -1,6 +1,7 @@
 import abc
 from functools import partial
 import os
+import warnings
 from tqdm import tqdm
 import numpy as np
 import mlxu
@@ -174,10 +175,25 @@ def main(argv):
         )
     else:
         tokenizer = prefix_tokenizer
-    L = max(len(tokenizer.encode(line)) for line in input_text)
+    
+    L = -1
+    overflowing_lines = []
+    kept_text = []
+    for i, line in enumerate(input_text):
+        tokens = tokenizer.encode(line)
+        L = max(L, len(tokens))
+        if len(tokens) > FLAGS.input_length:
+            if 'id' in input_lines[i]:
+                overflowing_lines.append(input_lines[i]['id'])
+            else:
+                overflowing_lines.append(i)
+        else:
+            kept_text.append(line)
     print("maximal input length:", L)
     if not FLAGS.truncate_inputs and L > FLAGS.input_length:
-        raise ValueError(f"Input length {FLAGS.input_length} is too short for input of length {L}")
+        warnings.warn(f"Input length {FLAGS.input_length} is too short for input of length {L}")
+        warnings.warn(f"Ignoring {len(overflowing_lines)} / {len(input_text)} lines, including {overflowing_lines[:10]}")
+        input_text = kept_text
     input_tokens = input_lengths = input_chunks = None
     if FLAGS.output_loglikelihood:
         input_tokens = []

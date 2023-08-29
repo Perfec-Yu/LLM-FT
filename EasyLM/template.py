@@ -62,8 +62,8 @@ class AlpacaQuestionGenerationTemplate(AutoSwitchTemplate):
     A template for question generation in alpaca_style.
     '''
     templates = [
-        AlpacaTemplate.templates[1].format(instruction="Generate some questions related to the facts in the following information.", context="{context}"),
-        AlpacaTemplate.templates[2].format(instruction="Generate some questions related to the facts in the following information. The questions can relate to either the date or the facts.", date="{date}", context="{context}"),
+        AlpacaTemplate.templates[1].format(instruction="Generate questions related to the facts in the following information.", context="{context}"),
+        AlpacaTemplate.templates[2].format(instruction="Generate questions related to the facts in the following information. The questions can relate to either the date or the facts.", date="{date}", context="{context}"),
     ]
     keywords = ['context', 'date']
 
@@ -91,7 +91,7 @@ class AlpacaAnswerTemplate(AutoSwitchTemplate):
 
 class AlpacaAnswerGenerationTemplate(AutoSwitchTemplate):
     templates = [None] + [
-        AlpacaTemplate.templates[1].format(instruction="Answer the question based on the facts from the input. Question: {question}", context='{context}')
+        AlpacaTemplate.templates[1].format(instruction="Answer the question based on the facts from the input. If there is no relevant information in the input, answer 'None'. Question: {question}", context='{context}')
     ]
     keywords = ['question', 'context']
 
