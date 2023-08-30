@@ -44,7 +44,10 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     load_checkpoint='',
     load_dataset_state='',
     log_freq=50,
-    save_model_freq=0,
+    patience=3,
+    early_stopping_metric='eval_loss',
+    early_stopping_mode='min',
+    save_freq=0,
     save_milestone_freq=0,
     save_epoch_freq=0,
     save_epoch_milestone_freq=0,
@@ -85,7 +88,7 @@ def main(argv):
     if FLAGS.total_epochs > 0:
         assert FLAGS.total_steps <= 0, ("Specifying both total_steps and total_epochs...")
         FLAGS.total_steps, epoch_steps = _epoch_to_steps(
-            FLAGS.total_epochs, dataset.config.batch_size, dataset._n_instances
+            FLAGS.total_epochs, dataset.config.batch_size, dataset.n_instances
         )
         print(f"Total steps: {FLAGS.total_steps}")
         if FLAGS.save_epoch_freq > 0:
@@ -263,12 +266,21 @@ def main(argv):
 
         start_step = int(jax.device_get(train_state.step))
 
-        if FLAGS.save_model_freq > 0:
+        if FLAGS.save_freq > 0:
             save_checkpoint(train_state)
 
         sharded_rng = next_rng()
 
         step_counter = trange(start_step, FLAGS.total_steps, ncols=0)
+        best_eval_metric = np.inf if FLAGS.early_stopping_mode == 'min' else -np.inf
+        patience_counter = 0
+        if FLAGS.early_stopping_mode != 'none':
+            assert FLAGS.patience > 0, ("Early stopping mode is not none, but patience is not set...")
+            assert FLAGS.eval_steps > 0, ("Early stopping mode is not none, but eval_steps is not set...")
+            if FLAGS.save_freq % FLAGS.log_freq != 0:
+                FLAGS.save_freq = FLAGS.log_freq * round(FLAGS.save_freq / FLAGS.log_freq)
+                print("Early stopping mode is not none, but save_freq is not a multiple of log_freq...")
+                print(f"Resetting save_freq to a multiple of log_freq: {FLAGS.save_freq}...")
 
         for step, (batch, dataset_metrics) in zip(step_counter, dataset):
             train_state, sharded_rng, metrics = sharded_train_step(
@@ -291,14 +303,35 @@ def main(argv):
                 log_metrics.update(dataset_metrics)
                 log_metrics = jax.device_get(log_metrics)
                 logger.log(log_metrics)
+                if step > 0 and step % FLAGS.save_freq == 0:
+                    if FLAGS.early_stopping_mode == 'min':
+                        if log_metrics[FLAGS.early_stopping_metric] < best_eval_metric:
+                            best_eval_metric = log_metrics[FLAGS.early_stopping_metric]
+                            patience_counter = 0
+                            save_checkpoint(train_state)
+                        else:
+                            patience_counter += 1
+                    elif FLAGS.early_stopping_mode == 'max':
+                        if log_metrics[FLAGS.early_stopping_metric] > best_eval_metric:
+                            best_eval_metric = log_metrics[FLAGS.early_stopping_metric]
+                            patience_counter = 0
+                            save_checkpoint(train_state)
+                        else:
+                            patience_counter += 1
+                log_metrics['patience'] = patience_counter
                 tqdm.write("\n" + pprint.pformat(log_metrics) + "\n")
 
-            if FLAGS.save_milestone_freq > 0 and (step + 1) % FLAGS.save_milestone_freq == 0:
-                save_checkpoint(train_state, milestone=True)
-            elif FLAGS.save_model_freq > 0 and (step + 1) % FLAGS.save_model_freq == 0:
-                save_checkpoint(train_state)
+                if FLAGS.early_stopping_mode != 'none' and patience_counter >= FLAGS.patience:
+                    tqdm.write(f"Early stopping at step {step}")
+                    break
+            
+            if FLAGS.early_stopping_mode == 'none':
+                if FLAGS.save_milestone_freq > 0 and (step + 1) % FLAGS.save_milestone_freq == 0:
+                    save_checkpoint(train_state, milestone=True)
+                elif FLAGS.save_freq > 0 and (step + 1) % FLAGS.save_freq == 0:
+                    save_checkpoint(train_state)
 
-        if FLAGS.save_model_freq > 0:
+        if FLAGS.save_freq > 0:
             save_checkpoint(train_state)
 
 

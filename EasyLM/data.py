@@ -1,5 +1,6 @@
 import dataclasses
 import pprint
+import random
 import time
 from functools import partial
 import json
@@ -25,6 +26,7 @@ class DatasetFactory(object):
         config.text_processor = TextProcessor.get_default_config()
         config.huggingface_dataset = HuggingfaceDataset.get_default_config()
         config.json_dataset = JsonDataset.get_default_config()
+        config.multijson_dataset = MultiJsonDataset.get_default_config()
 
         if updates is not None:
             config.update(ConfigDict(updates).copy_and_resolve_references())
@@ -40,6 +42,8 @@ class DatasetFactory(object):
             )
         elif config.type == 'json':
             return JsonDataset(config.json_dataset, tokenizer, text_processor, **kwargs)
+        elif config.type == 'multijson':
+            return MultiJsonDataset(config.multijson_dataset, tokenizer, text_processor, **kwargs)
         else:
             raise ValueError(f'Unknown dataset type: {config.type}')
 
@@ -296,6 +300,206 @@ class JsonDataset(object):
                     yield batch
     
 
+
+    def __iter__(self):
+        chunk_size = self.config.batch_size * self.config.seq_length
+        token_buffer = []
+        loss_mask_buffer = []
+        additional_arrays = {}
+        total_tokens = 0
+        last_time = 0.0
+        for tokens, loss_masks, additional_array_fields, additional_non_array_fields, loc, index in self.parallel_example_iterator():
+            if self.config.concatenate_inputs:
+                token_buffer.extend(tokens)
+                loss_mask_buffer.extend(loss_masks)
+                if len(additional_arrays) == 0 and len(additional_array_fields) != 0:
+                    for k, v in additional_array_fields.items():
+                        additional_arrays[k] = []
+                for k, v in additional_array_fields.items():
+                    assert len(v) == len(tokens)
+                    additional_arrays[k].extend(v)
+                while len(token_buffer) > chunk_size:
+                    total_tokens += chunk_size
+                    metrics = {
+                        'dataset_file_loc': loc,
+                        'dataset_example_index': index,
+                        'dataset_total_tokens': total_tokens,
+                        'dataset_throughput_tps': chunk_size / (time.time() - last_time),
+                    }
+                    last_time = time.time()
+                    yield_dict = {
+                        'tokens': np.array(token_buffer[:chunk_size], dtype=np.int32).reshape(
+                            self.config.batch_size, -1
+                        ),
+                        'loss_masks': np.array(loss_mask_buffer[:chunk_size], dtype=np.float32).reshape(
+                            self.config.batch_size, -1
+                        ),
+                    }
+                    for k, v in additional_arrays.items():
+                        yield_dict[k] = np.array(v[:chunk_size], dtype=np.float32).reshape(
+                            self.config.batch_size, -1
+                        )
+                    yield yield_dict, metrics
+                    token_buffer = token_buffer[chunk_size:]
+                    loss_mask_buffer = loss_mask_buffer[chunk_size:]
+                    for k, v in additional_arrays.items():
+                        additional_arrays[k] = v[chunk_size:]
+            else:
+                if len(additional_arrays) == 0 and len(additional_array_fields) != 0:
+                    for k, v in additional_array_fields.items():
+                        additional_arrays[k] = []
+                for k, v in additional_array_fields.items():
+                    assert len(v) == len(tokens)
+                if len(tokens) > self.config.seq_length:
+                    tokens = tokens[:self.config.seq_length]
+                    loss_masks = tokens[:self.config.seq_length]
+                    for k, v in additional_array_fields.items():
+                        additional_array_fields[k] = v[:self.config.seq_length]
+                token_buffer.append(tokens)
+                loss_mask_buffer.append(loss_masks)
+                for k, v in additional_array_fields.items():
+                    additional_arrays[k].append(v)
+                while len(token_buffer) >= self.config.batch_size:
+                    max_length = self.config.seq_length
+                    total_tokens += max_length * self.config.batch_size
+                    metrics = {
+                        'dataset_file_loc': loc,
+                        'dataset_example_index': index,
+                        'dataset_total_tokens': total_tokens,
+                        'dataset_throughput_tps': chunk_size / (time.time() - last_time),
+                    }
+                    last_time = time.time()
+                    batch_padded_tokens = [t + [self._tokenizer.pad_token_id] * (max_length - len(t)) for t in token_buffer]
+                    batch_padded_loss_mask = [t + [0.] * (max_length - len(t)) for t in loss_mask_buffer[:self.config.batch_size]]
+                    batch_padded_additional_arrays = {}
+                    for k, v in additional_arrays.items():
+                        batch_padded_additional_arrays[k] = [t + [0.] * (max_length - len(t)) for t in v[:self.config.batch_size]]
+                    yield_dict = {
+                        'tokens': np.array(batch_padded_tokens, dtype=np.int32),
+                        'loss_masks': np.array(batch_padded_loss_mask, dtype=np.float32),
+                    }
+                    for k, v in batch_padded_additional_arrays.items():
+                        yield_dict[k] = np.array(v, dtype=np.float32)
+                    yield yield_dict, metrics
+                    token_buffer = token_buffer[self.config.batch_size:]
+                    loss_mask_buffer = loss_mask_buffer[self.config.batch_size:]
+                    for k, v in additional_arrays.items():
+                        additional_arrays[k] = v[self.config.batch_size:]
+
+    def get_state_dict(self):
+        return dict(
+            config=self.config,
+            index=self._index,
+            file_loc=self._file_loc,
+        )
+
+    def load_state_dict(self, state_dict):
+        self.config = state_dict.get('config', self.config)
+        self._index = state_dict.get('index', self.config.index_at_start)
+        self._file_loc = state_dict.get('file_loc', self.config.start_seek_loc)
+
+    @property
+    def seq_length(self):
+        return self.config.seq_length
+
+    @property
+    def tokenizer(self):
+        return self._tokenizer
+
+    @property
+    def text_processor(self):
+        return self._text_processor
+
+    @property
+    def vocab_size(self):
+        return len(self.tokenizer)
+
+
+class MultiJsonDataset(object):
+    """ Multi-JSON dataset, where each line of the each data file contains a JSON
+        dictionary with text fields.
+        examples are sampled from each file in a round-robin fashion.
+    """
+
+    @staticmethod
+    def get_default_config(updates=None):
+        config = ConfigDict()
+        config.path = ''
+        config.seq_length = 1024
+        config.batch_size = 8
+        config.start_seek_loc = 0
+        config.index_at_start = 0
+        config.tokenizer_processes = 1
+        config.tokenizer_parallel_chunk_size = 128
+        config.concatenate_inputs = True
+
+        if updates is not None:
+            config.update(ConfigDict(updates).copy_and_resolve_references())
+        return config
+
+    def __init__(self, config, tokenizer, text_processor):
+        self.config = self.get_default_config(config)
+        assert self.config.path != ''
+        self._paths = self.config.path.split(',')
+        self._tokenizer = tokenizer
+        self._text_processor = text_processor
+        self._index = self.config.index_at_start
+        self._file_loc = self.config.start_seek_loc
+        data = []
+        for path in self._paths:
+            with mlxu.open_file(path, 'r') as fin:
+                data.append([self.parse_json(line) for line in fin])
+        if not self.config.concatenate_inputs:
+            self._n_instances = sum(len(t) for t in data)
+        else:
+            self._n_instances = None
+        self.data = data
+        self.idx = 0
+    
+    @property
+    def n_instances(self):
+        if self._n_instances is None:
+            self._n_instances = sum(len(self.text_processor(tt, has_aux=False)[0]) for t in self.data for tt in t) // self.config.seq_length
+        return self._n_instances
+            
+
+    def parse_json(self, line):
+        if not line or line == '\n':
+            return None
+        try:
+            data = json.loads(line)
+        except json.decoder.JSONDecodeError:
+            print(f'Error parsing json line:\n{line}')
+            return None
+        return data
+
+    def json_iterator(self):
+        # create a iterator that yields a sample for each sub dataset alternatively
+        # reset the current iterator when reaching the end of a sub dataset
+        # when resetting, randomly shuffle the sub dataset
+
+        iterators = [iter(t) for t in self.data]
+        while True:
+            try:
+                yield next(iterators[self.idx]), self._file_loc, self._index
+                self.idx = (self.idx + 1) % len(self.data)
+            except StopIteration:
+                random.shuffle(self.data[self.idx])
+                iterators[self.idx] = iter(self.data[self.idx])
+
+    def parallel_example_iterator(self):
+        if self.config.tokenizer_processes == 1:
+            for example, loc, index in self.json_iterator():
+                yield self.text_processor((example, loc, index), has_aux=True)
+        else:
+            with Pool(self.config.tokenizer_processes) as pool:
+                iterator = pool.imap(
+                    partial(self.text_processor, has_aux=True),
+                    self.json_iterator(),
+                    chunksize=self.config.tokenizer_parallel_chunk_size
+                )
+                for batch in iterator:
+                    yield batch
 
     def __iter__(self):
         chunk_size = self.config.batch_size * self.config.seq_length
