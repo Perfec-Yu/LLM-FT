@@ -148,9 +148,9 @@ def main(argv):
         FLAGS.prediction_input_files = [FLAGS.prediction_input_files]
     input_lines = []
     for input_file in FLAGS.prediction_input_files:
-        if not os.path.exists(input_file):
+        if not os.path.exists(input_file) and not input_file.startswith('gs://'):
             raise ValueError(f'Input file {input_file} does not exist')
-        with open(input_file, 'r') as f:
+        with mlxu.open_file(input_file, 'r') as f:
             input_lines += [json.loads(line) for line in f]
     field_mappings = parse_field_mappings(FLAGS.prediction_input_field_mappings)
     input_text = [
