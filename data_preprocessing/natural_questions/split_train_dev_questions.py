@@ -40,8 +40,16 @@ def main():
             context_to_examples[context] = []
         context_to_examples[context].append(t)
 
-    # keep only those context with more than 1 example
-    context_to_examples = {k:v for k,v in context_to_examples.items() if len(v) > 1}
+    # keep only those context 
+    # - with more than 1 example
+    # - not startswith "List of"
+    # - longer than 200 characters
+    context_to_examples = {k:v for k,v in context_to_examples.items() \
+                           if len(v) > 1 and not k.startswith("List of") and \
+                            len(k) > 200 and not k.startswith("No . ") and \
+                                not k.startswith("#") and \
+                                k.endswith(".") and \
+                                not k.startswith("Overall No . ")}
 
     # split examples with same context into train and dev (80/20), also make sure num_of_dev_examples >= 1
     train_examples = []
