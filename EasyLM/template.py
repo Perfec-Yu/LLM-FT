@@ -62,7 +62,7 @@ class AlpacaQuestionGenerationTemplate(AutoSwitchTemplate):
     A template for question generation in alpaca_style.
     '''
     templates = [
-        AlpacaTemplate.templates[1].format(instruction="Generate questions related to the facts in the following information.", context="{context}"),
+        AlpacaTemplate.templates[1].format(instruction="Given the input below, generate at least 5 questions that are directly related to the content of the input. Ensure that each question you generate does not contain coreferential words or pronouns (e.g., he, she, it, this, they, etc.). The questions should be clear, concise, and pertain specifically to details mentioned in the input.", context="{context}"),
         AlpacaTemplate.templates[2].format(instruction="Generate questions related to the facts in the following information. The questions can relate to either the date or the facts.", date="{date}", context="{context}"),
     ]
     keywords = ['context', 'date']

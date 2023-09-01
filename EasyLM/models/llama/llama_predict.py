@@ -179,6 +179,7 @@ def main(argv):
     L = -1
     overflowing_lines = []
     kept_text = []
+    kept_lines = []
     for i, line in enumerate(input_text):
         tokens = tokenizer.encode(line)
         L = max(L, len(tokens))
@@ -189,11 +190,15 @@ def main(argv):
                 overflowing_lines.append(i)
         else:
             kept_text.append(line)
+            kept_lines.append(input_lines[i])
     print("maximal input length:", L)
     if not FLAGS.truncate_inputs and L > FLAGS.input_length:
         warnings.warn(f"Input length {FLAGS.input_length} is too short for input of length {L}")
         warnings.warn(f"Ignoring {len(overflowing_lines)} / {len(input_text)} lines, including {overflowing_lines[:10]}")
         input_text = kept_text
+        input_lines = kept_lines
+        assert len(input_text) == len(input_lines)
+    print("total number of inputs:", len(input_text))
     input_tokens = input_lengths = input_chunks = None
     if FLAGS.output_loglikelihood:
         input_tokens = []
