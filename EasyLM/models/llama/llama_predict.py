@@ -382,7 +382,7 @@ def main(argv):
                         log_likelihoods = log_likelihoods[input_lengths[idx]:]
                         idx += 1
         else:
-            with open(FLAGS.prediction_output_file, 'w') as f:
+            with mlxu.open_file(FLAGS.prediction_output_file, 'w') as f:
                 idx = 0
                 log_likelihoods = []
                 for i in tqdm(range(0, len(input_tokens), FLAGS.prediction_batch_size)):
@@ -420,7 +420,7 @@ def main(argv):
                         log_likelihoods = log_likelihoods[input_lengths[idx]:]
                         idx += 1
     else:
-        with open(FLAGS.prediction_output_file, 'w') as f:
+        with mlxu.open_file(FLAGS.prediction_output_file, 'w') as f:
             idx = 0
             for text_chunk in tqdm(input_chunks):
                 outputs = generate(text_chunk, FLAGS.temperature)
