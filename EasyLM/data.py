@@ -452,8 +452,11 @@ class MultiJsonDataset(object):
                 s, e = n[:-1].split(':')
                 s = int(s) if s != '' else None
                 e = int(e) if e != '' else None
-            with mlxu.open_file(path, 'r') as fin:
-                data.append([self.parse_json(line) for line in fin][s:e])
+                with mlxu.open_file(path, 'r') as fin:
+                    data.append([self.parse_json(line) for line in fin][s:e])
+            else:
+                with mlxu.open_file(path, 'r') as fin:
+                    data.append([self.parse_json(line) for line in fin])
         if not self.config.concatenate_inputs:
             self._n_instances = sum(len(t) for t in data)
         else:
